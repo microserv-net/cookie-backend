@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  conformance:
+    name: the reference backend conforms
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Syntax
+        run: python3 -m compileall -q reference tools
+      - name: Run the reference backend and check it against the contract
+        # If this fails, either the reference drifted from the protocol or the
+        # protocol changed and the reference did not follow. Both are bugs,
+        # and both would otherwise be found by the frontend at runtime.
+        run: |
+          python3 reference/echo_backend.py --port 8080 &
+          sleep 2
+          python3 tools/conformance.py http://127.0.0.1:8080/api
