@@ -6,21 +6,44 @@ on:
   pull_request:
 
 jobs:
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      # No Ollama, no model, no network: the provider abstraction is what
+      # makes that possible, and if these ever need one, it has leaked.
+      - run: pytest -q
+
   conformance:
-    name: the reference backend conforms
+    name: both backends conform
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install -e .
       - name: Syntax
-        run: python3 -m compileall -q reference tools
-      - name: Run the reference backend and check it against the contract
-        # If this fails, either the reference drifted from the protocol or the
-        # protocol changed and the reference did not follow. Both are bugs,
-        # and both would otherwise be found by the frontend at runtime.
+        run: python3 -m compileall -q reference tools cookie_backend
+      - name: The reference backend
         run: |
-          python3 reference/echo_backend.py --port 8080 &
+          python3 reference/echo_backend.py --port 8081 &
           sleep 2
-          python3 tools/conformance.py http://127.0.0.1:8080/api
+          python3 tools/conformance.py http://127.0.0.1:8081/api
+      - name: The real backend
+        # It passes with Ollama absent because a model failure is *spoken*
+        # rather than swallowed — which is itself the behaviour we want.
+        run: |
+          python3 -m uvicorn --factory "tests.conftest:app_for_ci" \
+            --host 127.0.0.1 --port 8082 &
+          sleep 3
+          python3 tools/conformance.py http://127.0.0.1:8082/api

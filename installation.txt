@@ -1,0 +1,149 @@
+cookie-backend — installation
+=============================
+
+Target: Ubuntu (or any Linux with Python 3.11+). These are the exact steps
+from a fresh machine. Nothing here is undocumented or implied.
+
+
+1. Prerequisites
+----------------
+
+    sudo apt update
+    sudo apt install -y python3 python3-pip python3-venv curl
+
+Check the version — 3.11 or newer is required for tomllib:
+
+    python3 -V
+
+
+2. Ollama
+---------
+
+    curl -fsSL https://ollama.com/install.sh | sh
+    systemctl --user enable --now ollama      # or: ollama serve
+
+Verify:
+
+    curl -s http://127.0.0.1:11434/api/version
+
+
+3. The models
+-------------
+
+Pull the ones you want. The router is the only one that must be present for a
+minimal setup; the worker is what answers ordinary questions.
+
+    ollama pull qwen3:1.7b      # router      ~1.5 GB
+    ollama pull qwen3:4b        # worker      ~3 GB
+    ollama pull qwen3:8b        # architect   ~5-6 GB
+
+On a 16 GB machine all three will not be resident at once, and are not meant
+to be — see docs/scheduling.md.
+
+
+4. The backend
+--------------
+
+    git clone https://github.com/microserv-net/cookie-backend
+    cd cookie-backend
+    python3 -m venv .venv
+    . .venv/bin/activate
+    pip install -e .
+
+Write the default configuration and see where it went:
+
+    cookie-backend init
+
+Edit it if the defaults do not suit — model names, port, memory budget:
+
+    ${XDG_CONFIG_HOME:-~/.config}/cookie-backend/config.toml
+
+Check everything before starting:
+
+    cookie-backend doctor
+
+Start it:
+
+    cookie-backend
+
+
+5. Running as a service
+-----------------------
+
+    mkdir -p ~/.config/systemd/user
+    cat > ~/.config/systemd/user/cookie-backend.service <<'UNIT'
+    [Unit]
+    Description=Cookie backend
+    After=network-online.target
+
+    [Service]
+    ExecStart=%h/cookie-backend/.venv/bin/cookie-backend
+    Restart=on-failure
+
+    [Install]
+    WantedBy=default.target
+    UNIT
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now cookie-backend
+    loginctl enable-linger $USER      # so it survives logout
+
+
+6. Pairing a frontend
+---------------------
+
+On this machine:
+
+    cookie-backend pair
+
+It prints a code, valid ten minutes, single use. On the laptop running
+cookie-interface, exchange it for a token:
+
+    curl -s http://<backend-host>:8080/api/v1/pair \
+      -H "content-type: application/json" \
+      -d '{"code":"<the-code>","device_name":"laptop"}'
+
+Store the token it returns:
+
+    export COOKIE_BACKEND_TOKEN=<token>        # add to your shell profile
+
+Point the frontend at the backend:
+
+    cookie-interface --backend http://<backend-host>:8080/api
+
+Until the first device pairs, the API is open — a machine you cannot get into
+is worse than one on your own network that has not been locked yet. The moment
+one device pairs, everything except health requires a token.
+
+
+7. Over Tailscale
+-----------------
+
+Nothing special is required: the frontend dials out, so the backend only needs
+to be reachable.
+
+    sudo tailscale up
+
+Then use the Tailscale address as <backend-host>. Keep server.host = "0.0.0.0"
+in the config so it listens on the Tailscale interface too.
+
+
+8. Checking it worked
+---------------------
+
+    cookie-backend doctor
+    curl -s http://127.0.0.1:8080/api/v1/health
+    python3 tools/conformance.py http://127.0.0.1:8080/api
+
+Then, on the laptop, ask Cookie whether she is alright. If she answers, the
+whole path works: microphone, recognition, network, this machine, Ollama, and
+back out through the speaker.
+
+
+9. Uninstalling
+---------------
+
+    systemctl --user disable --now cookie-backend
+    rm -rf ~/cookie-backend
+    rm -rf ${XDG_CONFIG_HOME:-~/.config}/cookie-backend
+    rm -rf ${XDG_DATA_HOME:-~/.local/share}/cookie-backend   # tokens, state
