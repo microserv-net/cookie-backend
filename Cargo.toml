@@ -1,0 +1,47 @@
+[package]
+name = "cookie-backend"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Cookie's mind: routing, planning, tools and memory"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Async runtime and HTTP server. Same stack as the frontend, deliberately:
+# one set of idioms across the system is worth more than the marginal merits
+# of any particular alternative.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "signal", "process"] }
+axum = { version = "0.8", features = ["json", "tokio", "http1"] }
+tower = "0.5"
+futures-util = "0.3"
+tokio-stream = "0.1"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+
+# Plain HTTP is enough to reach Ollama on localhost or over Tailscale; TLS is
+# opt-in for the same reason as in the frontend — rustls drags in a C
+# toolchain, and this process talks to a machine you own.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "form"] }
+
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+directories = "6"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+axum-test = "18"
+
+[features]
+default = []
+# Reach an Ollama instance over https rather than on the LAN.
+tls = ["reqwest/rustls"]
+
+[profile.release]
+lto = "thin"

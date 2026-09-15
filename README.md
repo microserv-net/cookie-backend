@@ -4,10 +4,11 @@ Cookie's mind. Runs on a machine you own; talks to
 [cookie-frontend](https://github.com/microserv-net/cookie-frontend) over an
 authenticated HTTP protocol.
 
-**Nothing here is implemented yet.** This repository currently contains the
-contract, the design, and a reference server you can run today — so the
-frontend can be developed against something real while the actual backend is
-built.
+Currently implemented: the protocol, authentication and pairing, the model
+abstraction over Ollama, and the task lifecycle including cooperative
+preemption. You can talk to a real model through Cookie today. The
+orchestration on top — router, architect, worker, the validation loop, tools —
+is next.
 
 ```
 cookie-frontend (your laptop)          cookie-backend (your server)
@@ -21,39 +22,56 @@ cookie-frontend (your laptop)          cookie-backend (your server)
 | | |
 |---|---|
 | `docs/protocol.md` | the contract with the frontend. Authoritative. |
-| `docs/architecture.md` | the planned design, marked as design. |
+| `docs/architecture.md` | the design; implemented parts marked. |
+| `docs/tools.md` | the tool system, the wire protocol, and how to add one. |
 | `docs/scheduling.md` | how one machine holding one large model stays responsive. |
-| `reference/echo_backend.py` | a conforming backend in ~200 lines of stdlib Python. Run it, talk to Cookie, watch the whole path work. |
-| `tools/conformance.py` | checks any backend against the contract. |
+| `cookie_backend/` | the backend itself: server, auth, Ollama provider, tasks. |
+| `reference/echo_backend.py` | a conforming backend in ~200 lines of stdlib Python, for developing the frontend without any of this running. |
+| `tools/conformance.py` | checks any backend against the contract. Both the real server and the reference pass it. |
 
-## Try it now
-
-```bash
-python3 reference/echo_backend.py --port 8080
-```
-
-Then point the frontend at it:
+## Running it
 
 ```bash
-cookie-interface --backend http://127.0.0.1:8080/api
+cargo install --path .
+cookie-backend init          # writes the default config, tells you where
+ollama pull qwen3:4b         # and qwen3:1.7b, qwen3:8b when you want them
+cookie-backend doctor        # is everything ready?
+cookie-backend               # serve
 ```
 
-Say something. It will repeat it back, streamed sentence by sentence, with a
-fake task so you can watch the progress path work end to end. Ask it to do
-something long and then interrupt — that exercises the part that is easy to
-get wrong.
+Then on your laptop:
 
 ```bash
-python3 tools/conformance.py http://127.0.0.1:8080/api
+cookie-backend pair                       # on this machine: prints a code
+# exchange it for a token via POST /v1/pair, then:
+export COOKIE_BACKEND_TOKEN=<token>
+cookie-interface --backend http://<this-machine>:8080/api
 ```
 
-## What is deliberately not decided yet
+Say something. It goes microphone → recognition → here → Ollama → back →
+spoken, and the orb follows the whole way.
 
-The implementation language. The reference is stdlib Python because it must be
-readable and runnable by anyone in ten seconds — that is not a vote. The real
-backend runs Ollama-hosted models and a versioned tool system, and the choice
-between Python and Rust for it depends on how much of the tool execution ends
-up on this side rather than the frontend's. Deciding it in a README before any
-of that is built would be guessing.
+### Without Ollama
 
-What *is* decided is the protocol, because the frontend already speaks it.
+The backend still starts, still pairs, and still answers — it tells you it
+cannot reach a model rather than going quiet. `cargo test` covers the whole
+protocol with no Ollama, no model and no network.
+
+## Rust, like the frontend
+
+One language across the system. The alternative — a Rust frontend and a
+scripting-language backend — trades a genuine property for a convenience:
+the tool contracts, the protocol types and the risk classifications exist on
+both sides of the wire, and having them checked by the same compiler is worth
+more than faster iteration on this side. It also means one toolchain to
+install on the backend machine and one binary to deploy, with no interpreter
+or virtual environment to keep alive next to Ollama.
+
+## Model residency
+
+The first machine holds roughly one large model in memory, so `keep_alive` is
+not a tuning detail. The router stays resident because it is on the path of
+every request; the architect is loaded for planning and evicted afterwards,
+because holding it alongside the worker is what pushes 16 GB into swap.
+`GET /v1/models` reports what is resident against the budget, and the server
+evicts before loading when it has to. See [docs/scheduling.md](docs/scheduling.md).

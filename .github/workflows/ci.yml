@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The backend is meant for Linux, but the protocol and the tool
+        # contracts are shared with a frontend that is not, so they are built
+        # everywhere the frontend is.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # No Ollama, no model, no network. If this ever needs one, something
+      # has leaked out of the provider abstraction.
+      - run: cargo test --all-targets
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # The only job that meets a real model. Public-repo runners have the room
+  # for a 1.7b, so the things that cannot be checked against a fake provider —
+  # that Qwen3 answers the router in parseable JSON, that <think> blocks never
+  # reach the user, that a plan comes back with checkable steps — are checked
+  # here rather than discovered on your machine.
+  ollama:
+    name: against a real model
+    runs-on: ubuntu-latest
+    # Model download plus generation on a CPU runner; generous but bounded.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:11434/api/version && break
+            sleep 2
+          done
+
+      - name: Pull the router model
+        # Only the smallest role. The 8b would not finish on a CPU runner, and
+        # the failures worth catching here are about prompt and parsing, which
+        # the small model exhibits just as well — more so, if anything.
+        run: ollama pull qwen3:1.7b
+
+      - name: Exercise the pipeline against it
+        env:
+          COOKIE_OLLAMA_TESTS: "1"
+          COOKIE_TEST_MODEL: "qwen3:1.7b"
+        run: cargo test --test ollama -- --ignored --nocapture --test-threads=1
+
+      - name: Ollama log on failure
+        if: failure()
+        run: tail -100 /tmp/ollama.log
