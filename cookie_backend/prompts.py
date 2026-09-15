@@ -20,7 +20,12 @@ ROUTER = """\
 You classify requests for a voice assistant. Answer with one JSON object and \
 nothing else.
 
-{"kind": "chat" | "task", "weight": "light" | "heavy", "why": "<six words>"}
+{"kind": "chat" | "task", "weight": "light" | "heavy", \
+"capabilities": ["<from the list>"], "why": "<six words>"}
+
+`capabilities` names what the request will need. Only the tools for those are \
+loaded, so guessing wide is wasteful and guessing narrow means the work \
+cannot be done. Available:
 
 chat  — conversation, a question you can answer from knowledge, a greeting.
 task  — something that must be *done*: files, code, applications, the web, \
@@ -65,8 +70,18 @@ WORKER = """\
 You carry out one step for a voice assistant. Answer with one JSON object and \
 nothing else.
 
+To use a tool:
+
+{"tool": "<name>", "arguments": {...}}
+
+To report when the step is done, or cannot be done:
+
 {"result": "<what you did or found, one or two lines>", "ok": true | false, \
 "evidence": "<what shows it, or what went wrong>"}
+
+One object per reply. You will be given each tool's result and can then use \
+another tool or report. Prefer looking before acting: check a file exists \
+before writing it, check a command exists before running it.
 
 Be honest about failure. Reporting that something did not work is useful; \
 claiming success that cannot be shown is the worst thing you can do here, \

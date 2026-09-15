@@ -23,6 +23,9 @@ from .config import Config
 from .ollama import ModelError, OllamaProvider
 from .orchestrator import Orchestrator
 from .tasks import Cancelled, TaskManager
+from .tools import ToolRegistry, ToolResult
+from .tools.builtin import Memory, register_builtin
+from .tools.frontend import FrontendBridge, register_frontend
 
 #: Kept short on purpose. The reply is going to be *spoken*, and a model that
 #: writes an essay produces an assistant nobody lets finish a sentence.
@@ -53,6 +56,14 @@ def create_app(
     app.state.provider = provider or OllamaProvider(config)
     app.state.devices = devices or DeviceStore(config.data_dir / "devices.json")
     app.state.tasks = TaskManager(max_concurrent_heavy=config.max_concurrent_heavy)
+    app.state.memory = Memory(config.data_dir / "memory.json")
+    app.state.registry = register_frontend(
+        register_builtin(ToolRegistry(), app.state.memory)
+    )
+    #: One bridge per process rather than per turn: tool results arrive on a
+    #: separate request, and correlating them by call id is simpler than
+    #: routing them to the right turn's bridge.
+    app.state.bridge = FrontendBridge()
 
     base = config.base_path.rstrip("/")
 
@@ -157,6 +168,49 @@ def create_app(
         cancelled = await app.state.tasks.cancel([task_id] if task_id else None)
         return JSONResponse({"cancelled": cancelled})
 
+    @app.get(f"{base}/v1/tools")
+    async def tools(_=Depends(require_device)) -> JSONResponse:
+        """What this backend can do, and where each tool runs.
+
+        The frontend reads this to know which local tools it is expected to
+        implement, and clients can read it to see what a request might touch.
+        """
+        registry: ToolRegistry = app.state.registry
+        return JSONResponse(
+            {
+                "capabilities": registry.capabilities(),
+                "tools": [
+                    {"name": t.name, "version": t.version, "summary": t.summary,
+                     "capabilities": list(t.capabilities), "runs": t.runs,
+                     "risk": t.risk, "parameters": t.parameters,
+                     "required": list(t.required)}
+                    for t in registry.all()
+                ],
+            }
+        )
+
+    @app.post(f"{base}/v1/tool-result")
+    async def tool_result(request: Request, _=Depends(require_device)) -> JSONResponse:
+        """The frontend answering a `tool.request` it received on the stream.
+
+        Correlated by `id`. An unknown id is not an error worth failing on —
+        it means the turn moved on, usually because the call timed out or was
+        cancelled, and the frontend should not be made to care.
+        """
+        body = await _json_body(request)
+        call_id = str(body.get("id", ""))
+        if not call_id:
+            raise HTTPException(status_code=400, detail="a tool result needs an id")
+        result = ToolResult(
+            ok=bool(body.get("ok", False)),
+            summary=str(body.get("summary", "")),
+            data=body.get("data"),
+            evidence=str(body.get("evidence", "")),
+            error=body.get("error"),
+        )
+        accepted = app.state.bridge.deliver(call_id, result)
+        return JSONResponse({"accepted": accepted})
+
     @app.get(f"{base}/v1/tasks")
     async def tasks(_=Depends(require_device)) -> JSONResponse:
         return JSONResponse(
@@ -212,7 +266,12 @@ async def _run_turn(app: FastAPI, body: dict) -> AsyncIterator[bytes]:
         weight="heavy" if heavy else "light",
     )
 
-    orchestrator = Orchestrator(config, provider, manager)
+    # The frontend tells us what it can do when it opens a turn; anything it
+    # does not implement is never offered to the model.
+    app.state.bridge.advertise(body.get("tools"))
+    orchestrator = Orchestrator(
+        config, provider, manager, app.state.registry, app.state.bridge
+    )
 
     async def drive() -> None:
         stood_aside = []

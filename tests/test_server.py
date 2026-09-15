@@ -270,3 +270,44 @@ async def test_preemption_suspends_heavy_work_and_resumes_it():
     # Suspended, then picked back up, then finished: nothing was lost.
     assert states.index("suspended") < states.index("running", states.index("suspended"))
     assert states[-1] == "completed"
+
+
+async def test_the_tool_catalogue_says_where_each_tool_runs():
+    app, token = build(paired=True)
+    async with client(app) as ac:
+        body = (await ac.get("/api/v1/tools",
+                             headers={"authorization": f"Bearer {token}"})).json()
+    by_name = {t["name"]: t for t in body["tools"]}
+    assert by_name["shell.run"]["runs"] == "frontend"
+    assert by_name["web.fetch"]["runs"] == "backend"
+    assert by_name["git.push"]["risk"] == "critical"
+    assert "files" in body["capabilities"]
+
+
+async def test_tool_results_are_correlated_by_id():
+    app, _ = build()
+    async with client(app) as ac:
+        # Nobody is waiting for this one, which is not an error: the turn has
+        # moved on, and the frontend should not be made to care.
+        response = await ac.post("/api/v1/tool-result",
+                                 json={"id": "call-nobody-wants", "ok": True,
+                                       "summary": "done"})
+        assert response.status_code == 200
+        assert response.json()["accepted"] is False
+
+        response = await ac.post("/api/v1/tool-result", json={"ok": True})
+        assert response.status_code == 400
+
+
+async def test_a_frontend_only_gets_offered_what_it_says_it_implements():
+    app, _ = build()
+    async with client(app) as ac:
+        await ac.post("/api/v1/chat", json={
+            "text": "hello", "final": True,
+            "tools": ["filesystem.search", "shell.run"],
+            "scheduling": {"preempt": False},
+        })
+    bridge = app.state.bridge
+    registry = app.state.registry
+    assert bridge.offers(registry.get("shell.run"))
+    assert not bridge.offers(registry.get("vscode.workspace"))

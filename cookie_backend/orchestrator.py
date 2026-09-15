@@ -48,11 +48,16 @@ from .config import Config
 from .ollama import ModelError, OllamaProvider
 from .parsing import find_json_object, spoken_text
 from .tasks import Task, TaskManager
+from .tools import FRONTEND, ToolCall, ToolRegistry, ToolResult
+from .tools.frontend import FrontendBridge
 
 #: How many times the architect may replan before we stop and explain.
 MAX_REPLANS = 2
 #: Cap on steps per plan, whatever the architect thinks.
 MAX_STEPS = 5
+#: Tool calls allowed within one step, before we make the worker report.
+#: Without this a model that likes a tool will happily use it forever.
+MAX_TOOL_CALLS = 6
 
 
 @dataclass
@@ -99,6 +104,10 @@ class Outcome:
 Emit = Callable[[dict], Awaitable[None]]
 
 
+async def _discard(_message: dict) -> None:
+    """Sink for tool calls made outside a streaming turn (tests, retries)."""
+
+
 class Orchestrator:
     """One turn, start to finish."""
 
@@ -107,10 +116,14 @@ class Orchestrator:
         config: Config,
         provider: OllamaProvider,
         tasks: TaskManager,
+        registry: ToolRegistry | None = None,
+        bridge: FrontendBridge | None = None,
     ) -> None:
         self.config = config
         self.provider = provider
         self.tasks = tasks
+        self.registry = registry or ToolRegistry()
+        self.bridge = bridge or FrontendBridge()
 
     # --- model access ----------------------------------------------------
 
@@ -158,16 +171,56 @@ class Orchestrator:
 
     # --- the pipeline ----------------------------------------------------
 
-    async def route(self, text: str, task: Task) -> tuple[str, str]:
-        """(kind, weight). Falls back to conversation, which is always safe."""
+    async def route(self, text: str, task: Task) -> tuple[str, str, list[str]]:
+        """(kind, weight, capabilities).
+
+        Falls back to conversation, which is always safe: an assistant that
+        answers when it should have acted is a disappointment; one that acts
+        when it should have answered is a hazard.
+        """
+        available = ", ".join(self.registry.capabilities()) or "none"
+        system = f"{prompts.ROUTER} {available}"
         try:
-            raw = await self._complete("router", prompts.ROUTER, text, task)
+            raw = await self._complete("router", system, text, task)
         except ModelError:
-            return "chat", "light"
+            return "chat", "light", []
         parsed = find_json_object(raw) or {}
         kind = parsed.get("kind") if parsed.get("kind") in ("chat", "task") else "chat"
         weight = parsed.get("weight") if parsed.get("weight") in ("light", "heavy") else "light"
-        return kind, weight
+        wanted = parsed.get("capabilities")
+        capabilities = [str(c) for c in wanted] if isinstance(wanted, list) else []
+        return kind, weight, capabilities
+
+    def tools_for(self, capabilities: list[str]) -> list:
+        """The tools worth showing the model, filtered by what is reachable."""
+        return [
+            tool
+            for tool in self.registry.discover(capabilities)
+            if self.bridge.offers(tool)
+        ]
+
+    async def _use_tool(self, call: ToolCall, task: Task, emit: Emit) -> ToolResult:
+        """Run one tool call, wherever it lives."""
+        tool = self.registry.get(call.name)
+        if tool is None:
+            return ToolResult.failed(f"there is no tool called {call.name}")
+        complaint = tool.validate(call.arguments)
+        if complaint:
+            return ToolResult.failed(complaint)
+
+        await self.tasks.set_state(task, task.state, f"using {tool.name}")
+        # A tool call is a checkpoint: we are about to wait on something
+        # anyway, so it is free to let a more urgent turn go first.
+        await self.tasks.checkpoint(task)
+
+        if tool.runs == FRONTEND:
+            return await self.bridge.call(call.id, emit, tool, call.arguments)
+        if tool.handler is None:
+            return ToolResult.failed(f"{tool.name} is declared but not implemented here")
+        try:
+            return await tool.handler(call.arguments)
+        except Exception as e:  # noqa: BLE001 - a broken tool is a failed step
+            return ToolResult.failed(f"{tool.name} failed: {type(e).__name__}: {e}")
 
     async def plan(self, objective: str, task: Task, history: list[Attempt],
                    avoid: set[str]) -> Plan | None:
@@ -203,17 +256,53 @@ class Orchestrator:
             return None
         return plan
 
-    async def execute(self, objective: str, step: Step, task: Task) -> Attempt:
-        """Worker does the step; validator decides whether it counts."""
-        raw = await self._complete(
-            "worker",
-            prompts.WORKER,
-            f"Objective: {objective}\nStep: {step.what}\nSucceeds when: {step.done_when}",
-            task,
+    async def execute(
+        self,
+        objective: str,
+        step: Step,
+        task: Task,
+        tools: list | None = None,
+        emit: Emit | None = None,
+    ) -> Attempt:
+        """Worker does the step, using tools; validator decides whether it counts."""
+        tools = tools or []
+        system = prompts.WORKER
+        if tools:
+            system += "\n\nTools available:\n" + self.registry.describe(tools)
+
+        transcript = (
+            f"Objective: {objective}\nStep: {step.what}\nSucceeds when: {step.done_when}"
         )
-        parsed = find_json_object(raw) or {}
+        tool_evidence: list[str] = []
+        parsed: dict = {}
+        raw = ""
+
+        for call_number in range(MAX_TOOL_CALLS + 1):
+            raw = await self._complete("worker", system, transcript, task)
+            parsed = find_json_object(raw) or {}
+            call = ToolCall.from_json(parsed, f"{task.id}-call-{call_number}") if tools else None
+            if call is None:
+                break
+            if call_number == MAX_TOOL_CALLS:
+                tool_evidence.append("stopped after too many tool calls")
+                break
+            result = await self._use_tool(call, task, emit or _discard)
+            tool_evidence.append(f"{call.name}: {result.evidence or result.summary}")
+            # The model sees exactly what happened, including failures, and
+            # decides what to do about it.
+            transcript += (
+                f"\n\nYou used {call.name} with {call.arguments}.\n"
+                f"Result: {'ok' if result.ok else 'FAILED'} — {result.summary}"
+            )
+            if result.data is not None:
+                transcript += f"\nData: {str(result.data)[:1500]}"
+
         result = spoken_text(str(parsed.get("result", ""))) or spoken_text(raw)[:400]
         evidence = str(parsed.get("evidence", "")).strip()
+        if tool_evidence:
+            # Tool output is *external* evidence, which is the entire reason
+            # the validator is worth more than a second opinion.
+            evidence = "; ".join(tool_evidence) + (f"; {evidence}" if evidence else "")
         claimed = bool(parsed.get("ok", False))
 
         # The worker's own verdict is an input, not the answer.
@@ -239,7 +328,8 @@ class Orchestrator:
 
     async def run(self, text: str, task: Task, emit: Emit) -> Outcome:
         """Handle one utterance. Speech and progress go out through `emit`."""
-        kind, weight = await self.route(text, task)
+        kind, weight, capabilities = await self.route(text, task)
+        tools = self.tools_for(capabilities)
         await self.tasks.set_state(
             task,
             "running",
@@ -273,7 +363,7 @@ class Orchestrator:
                 await self.tasks.set_state(
                     task, "running", f"step {index} of {len(plan.steps)}: {step.what}"
                 )
-                result = await self.execute(text, step, task)
+                result = await self.execute(text, step, task, tools, emit)
                 outcome.attempts.append(result)
                 if not result.passed:
                     failed = result

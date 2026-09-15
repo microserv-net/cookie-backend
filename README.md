@@ -22,7 +22,8 @@ cookie-frontend (your laptop)          cookie-backend (your server)
 | | |
 |---|---|
 | `docs/protocol.md` | the contract with the frontend. Authoritative. |
-| `docs/architecture.md` | the planned design, marked as design. |
+| `docs/architecture.md` | the design; implemented parts marked. |
+| `docs/tools.md` | the tool system, the wire protocol, and how to add one. |
 | `docs/scheduling.md` | how one machine holding one large model stays responsive. |
 | `cookie_backend/` | the backend itself: server, auth, Ollama provider, tasks. |
 | `reference/echo_backend.py` | a conforming backend in ~200 lines of stdlib Python, for developing the frontend without any of this running. |
