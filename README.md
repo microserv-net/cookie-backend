@@ -32,7 +32,7 @@ cookie-frontend (your laptop)          cookie-backend (your server)
 ## Running it
 
 ```bash
-pip install -e .
+cargo install --path .
 cookie-backend init          # writes the default config, tells you where
 ollama pull qwen3:4b         # and qwen3:1.7b, qwen3:8b when you want them
 cookie-backend doctor        # is everything ready?
@@ -51,26 +51,21 @@ cookie-interface --backend http://<this-machine>:8080/api
 Say something. It goes microphone → recognition → here → Ollama → back →
 spoken, and the orb follows the whole way.
 
-### Without any of this running
+### Without Ollama
 
-```bash
-python3 reference/echo_backend.py --port 8080     # echoes, streams, has tasks
-python3 tools/conformance.py http://127.0.0.1:8080/api
-```
+The backend still starts, still pairs, and still answers — it tells you it
+cannot reach a model rather than going quiet. `cargo test` covers the whole
+protocol with no Ollama, no model and no network.
 
-## Why Python
+## Rust, like the frontend
 
-The frontend is Rust because it is a real-time audio and graphics application
-with a hard latency budget. None of that is true here: this process spends its
-life waiting on HTTP calls to Ollama and on tools, and the work is orchestration
-and text handling, where iteration speed matters more than microseconds.
-
-Python also keeps the dependency list short on the target machine — Ubuntu with
-Ollama already installed — and makes the tool layer, which is the part that will
-change most often, cheap to extend.
-
-The protocol is the boundary, so this decision is reversible. Nothing on the
-frontend side knows or cares what language answers it.
+One language across the system. The alternative — a Rust frontend and a
+scripting-language backend — trades a genuine property for a convenience:
+the tool contracts, the protocol types and the risk classifications exist on
+both sides of the wire, and having them checked by the same compiler is worth
+more than faster iteration on this side. It also means one toolchain to
+install on the backend machine and one binary to deploy, with no interpreter
+or virtual environment to keep alive next to Ollama.
 
 ## Model residency
 

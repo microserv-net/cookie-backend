@@ -1,7 +1,2 @@
-__pycache__/
-*.py[cod]
-.venv/
-*.egg-info/
-.pytest_cache/
-build/
-dist/
+target/
+**/*.rs.bk
