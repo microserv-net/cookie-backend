@@ -105,15 +105,24 @@ each one runs.
 
 ## Adding a tool
 
-Backend-side, in `cookie_backend/tools/builtin.py`:
+Backend-side, in `src/tools/builtin.rs`:
 
-```python
-Tool("web.fetch", 1, "fetch a page and return its readable text",
-     ("web", "research"), {"url": "string"}, ("url",), BACKEND, SAFE, _fetch)
+```rust
+Tool {
+    name: "web.fetch",
+    version: 1,
+    summary: "fetch a page and return its readable text",
+    capabilities: &["web", "research"],
+    parameters: &[("url", "string")],
+    required: &["url"],
+    runs: Runs::Backend,
+    risk: Risk::Safe,
+    handler: Some(handler(fetch)),
+}
 ```
 
-Frontend-side, add it to `FRONTEND_TOOLS` in `tools/frontend.py` and implement
-it in the frontend. Nothing in the orchestrator changes either way — that is
+Frontend-side, add it to `tools()` in `src/tools/frontend.rs` and implement it
+in the frontend. Nothing in the orchestrator changes either way — that is
 the property the whole package is arranged around.
 
 ## Memory

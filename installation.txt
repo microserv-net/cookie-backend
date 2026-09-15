@@ -9,11 +9,13 @@ from a fresh machine. Nothing here is undocumented or implied.
 ----------------
 
     sudo apt update
-    sudo apt install -y python3 python3-pip python3-venv curl
+    sudo apt install -y build-essential curl pkg-config
 
-Check the version — 3.11 or newer is required for tomllib:
+Rust 1.80 or newer:
 
-    python3 -V
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    . "$HOME/.cargo/env"
+    rustc --version
 
 
 2. Ollama
@@ -46,9 +48,7 @@ to be — see docs/scheduling.md.
 
     git clone https://github.com/microserv-net/cookie-backend
     cd cookie-backend
-    python3 -m venv .venv
-    . .venv/bin/activate
-    pip install -e .
+    cargo install --path .        # puts cookie-backend on your PATH
 
 Write the default configuration and see where it went:
 
@@ -77,7 +77,7 @@ Start it:
     After=network-online.target
 
     [Service]
-    ExecStart=%h/cookie-backend/.venv/bin/cookie-backend
+    ExecStart=%h/.cargo/bin/cookie-backend
     Restart=on-failure
 
     [Install]
@@ -133,7 +133,7 @@ in the config so it listens on the Tailscale interface too.
 
     cookie-backend doctor
     curl -s http://127.0.0.1:8080/api/v1/health
-    python3 tools/conformance.py http://127.0.0.1:8080/api
+    cargo test                    # the protocol, without needing Ollama
 
 Then, on the laptop, ask Cookie whether she is alright. If she answers, the
 whole path works: microphone, recognition, network, this machine, Ollama, and
@@ -145,5 +145,6 @@ back out through the speaker.
 
     systemctl --user disable --now cookie-backend
     rm -rf ~/cookie-backend
+    rm -f ~/.cargo/bin/cookie-backend
     rm -rf ${XDG_CONFIG_HOME:-~/.config}/cookie-backend
     rm -rf ${XDG_DATA_HOME:-~/.local/share}/cookie-backend   # tokens, state

@@ -5,45 +5,48 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
 jobs:
-  test:
-    name: tests
+  check:
+    name: fmt + clippy
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.11", "3.12"]
+        # The backend is meant for Linux, but the protocol and the tool
+        # contracts are shared with a frontend that is not, so they are built
+        # everywhere the frontend is.
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - run: pip install -e ".[dev]"
-      # No Ollama, no model, no network: the provider abstraction is what
-      # makes that possible, and if these ever need one, it has leaked.
-      - run: pytest -q
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # No Ollama, no model, no network. If this ever needs one, something
+      # has leaked out of the provider abstraction.
+      - run: cargo test --all-targets
 
-  conformance:
-    name: both backends conform
+  docs:
+    name: docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -e .
-      - name: Syntax
-        run: python3 -m compileall -q reference tools cookie_backend
-      - name: The reference backend
-        run: |
-          python3 reference/echo_backend.py --port 8081 &
-          sleep 2
-          python3 tools/conformance.py http://127.0.0.1:8081/api
-      - name: The real backend
-        # It passes with Ollama absent because a model failure is *spoken*
-        # rather than swallowed — which is itself the behaviour we want.
-        run: |
-          python3 -m uvicorn --factory "tests.conftest:app_for_ci" \
-            --host 127.0.0.1 --port 8082 &
-          sleep 3
-          python3 tools/conformance.py http://127.0.0.1:8082/api
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
