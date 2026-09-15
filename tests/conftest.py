@@ -14,7 +14,8 @@ def app_for_ci():
     than the test client — the two find different bugs.
     """
     config = Config(
-        roles={"worker": ModelRole(model="qwen3:4b"),
+        roles={"router": ModelRole(model="qwen3:1.7b"),
+               "worker": ModelRole(model="qwen3:4b"),
                "architect": ModelRole(model="qwen3:8b")},
         data_dir=Path(tempfile.mkdtemp()),
     )

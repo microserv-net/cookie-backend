@@ -4,11 +4,8 @@ Implements `docs/protocol.md`. Everything streams: a turn is answered with
 newline-delimited JSON as the model produces it, so Cookie starts speaking
 the first sentence while the rest is still being generated.
 
-What is deliberately *not* here yet is the orchestration — router, architect,
-worker, the validation loop. This is the transport, the authentication, the
-task lifecycle and a single-model path, which is the honest foundation for
-those and is already useful: you can talk to a real model through Cookie
-today.
+Routing, planning and validation live in `orchestrator.py`; this module is
+the transport, the authentication and the task lifecycle around them.
 """
 
 from __future__ import annotations
@@ -24,6 +21,7 @@ from . import PROTOCOL, __version__
 from .auth import DeviceStore, PairingError
 from .config import Config
 from .ollama import ModelError, OllamaProvider
+from .orchestrator import Orchestrator
 from .tasks import Cancelled, TaskManager
 
 #: Kept short on purpose. The reply is going to be *spoken*, and a model that
@@ -214,6 +212,8 @@ async def _run_turn(app: FastAPI, body: dict) -> AsyncIterator[bytes]:
         weight="heavy" if heavy else "light",
     )
 
+    orchestrator = Orchestrator(config, provider, manager)
+
     async def drive() -> None:
         stood_aside = []
         try:
@@ -226,32 +226,13 @@ async def _run_turn(app: FastAPI, body: dict) -> AsyncIterator[bytes]:
                 )
 
             await manager.set_state(task, "running")
-
-            role = config.role("architect" if heavy else "worker")
-            evicted = await provider.make_room_for(role)
-            if evicted:
+            outcome = await orchestrator.run(
+                text or "(the user said nothing audible)", task, outbox.put
+            )
+            if not task.cancelled:
                 await manager.set_state(
-                    task, "running", f"making room by unloading {', '.join(evicted)}"
+                    task, "completed" if outcome.succeeded else "failed"
                 )
-            # Loading a model is a checkpoint: it is the most expensive thing
-            # we do and the easiest point at which to let somebody else go
-            # first.
-            await manager.checkpoint(task)
-
-            messages = [
-                {"role": "system", "content": SPOKEN_SYSTEM_PROMPT},
-                {"role": "user", "content": text or "(the user said nothing audible)"},
-            ]
-            said_anything = False
-            async for fragment in provider.chat(role, messages):
-                if task.cancelled:
-                    break
-                said_anything = True
-                await outbox.put({"type": "delta", "text": fragment})
-            if not said_anything and not task.cancelled:
-                await outbox.put({"type": "delta", "text": "I didn't have anything to say to that."})
-
-            await manager.set_state(task, "completed" if not task.cancelled else "cancelled")
 
         except Cancelled:
             await manager.set_state(task, "cancelled")
