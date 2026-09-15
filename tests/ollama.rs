@@ -192,7 +192,7 @@ async fn reasoning_blocks_are_stripped_from_real_output() {
         !spoken.is_empty(),
         "stripping removed everything from:\n{raw}"
     );
-    assert_eq!(strip_reasoning(&raw).is_empty(), false);
+    assert!(!strip_reasoning(&raw).is_empty());
 }
 
 #[tokio::test]
